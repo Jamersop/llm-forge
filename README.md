@@ -22,9 +22,56 @@ uvicorn forge.api:app --host 0.0.0.0 --port 8000
 
 Data, runs and the SQLite DB go to `./forge_data`. Set `FORGE_HOME` to put them somewhere else.
 
-No GPU or Hugging Face access? Generate a tiny local model to try the full flow:
+No GPU? See [Where to train](#where-to-train). Training can run on a rented cloud GPU while
+the UI runs on your laptop, or in a free Kaggle/Colab notebook.
+
+No Hugging Face access? Generate a tiny local model to try the full flow:
 `python scripts/make_tiny_model.py ./tiny-model`, then enter its absolute path as the base
 model. Run the tests with `pytest tests`.
+
+## Where to train
+
+Pick per job, under **Compute** on the Train page. The page also estimates whether the
+chosen model and method fit in the chosen GPU's memory.
+
+| Option | What you need | Good for |
+|---|---|---|
+| **This machine: NVIDIA GPU** | CUDA GPU (auto-detected) | everything; QLoRA needs this |
+| **This machine: Apple Silicon** | M1–M4 Mac (MPS, auto-detected) | LoRA on models up to ~4B; slower than NVIDIA |
+| **This machine: CPU** | nothing | tiny test models only |
+| **Cloud GPU (Modal)** | a [Modal](https://modal.com) account | any size; pick T4 … H100 per job, pay per second |
+| **Free notebook** | a Kaggle or Google account | free T4 GPU; [`notebooks/train_on_free_gpu.ipynb`](notebooks/train_on_free_gpu.ipynb) |
+| **Command line** | any GPU box over SSH | `python -m forge.cli train ...`, no server needed |
+
+### Cloud GPUs with Modal (one-time setup)
+
+```bash
+pip install modal
+modal setup                          # log in (opens a browser)
+modal deploy forge/remote_modal.py   # from the repo root; repeat after updating Forge
+export HF_TOKEN=hf_...               # only for gated models (Llama, Gemma)
+```
+
+Restart the server. "Cloud GPU (Modal)" becomes selectable, and you pick the GPU type per job.
+How it works:
+- The job's data goes to a GPU container, and loss/metrics stream back live.
+- Cancelling a job stops the remote GPU.
+- Trained weights are downloaded into `runs/<job>/`, so export and the local playground work
+  as usual.
+- The playground's **Run on → Cloud GPU** chats on a GPU too. That container stays warm for
+  5 minutes, then shuts down.
+- Model downloads are cached in a Modal Volume, so repeat jobs start faster.
+
+### Command line
+
+```bash
+python -m forge.cli info                                        # what hardware is available
+python -m forge.cli train --base-model Qwen/Qwen3-1.7B \
+    --data qa.jsonl --data manual.txt --out runs/my-model \
+    --set epochs=2 --set max_seq_len=4096                       # any setting from the table below
+python -m forge.cli train ... --compute modal --gpu A100-40GB   # same, on a rented GPU
+python -m forge.cli chat --run runs/my-model                    # chat in the terminal
+```
 
 ## How the model ends up good at language, reasoning *and* your domain
 
@@ -70,7 +117,8 @@ CSV with the same column names also works. See `examples/` for samples.
 
 | Setting | Default | Notes |
 |---|---|---|
-| method | lora | `qlora` = 4-bit base model, CUDA + bitsandbytes only |
+| compute / gpu | local / A10G | `modal` = rented cloud GPU of type `gpu` |
+| method | lora | `qlora` = 4-bit base model, NVIDIA GPU + bitsandbytes only |
 | epochs | 3 | 1–2 for big datasets or corpora |
 | learning_rate | 2e-4 | LoRA. Use ~1e-5 for `full` |
 | batch_size × grad_accum | 2 × 8 | effective batch of 16 |
@@ -86,13 +134,14 @@ QLoRA roughly halves these.
 | | |
 |---|---|
 | `GET /api/models` | catalog + default hyperparameters |
+| `GET /api/compute` | local device (cuda/mps/cpu, GPU name, memory) + cloud GPU availability |
 | `POST /api/datasets` (multipart `file`, `name`) | upload + validate |
 | `GET /api/datasets`, `GET /api/datasets/{id}/preview`, `DELETE /api/datasets/{id}` | |
 | `POST /api/jobs` `{base_model, dataset_ids, hparams, name}` | queue a training job |
 | `GET /api/jobs`, `GET /api/jobs/{id}` (includes loss history), `GET /api/jobs/{id}/logs` | |
 | `POST /api/jobs/{id}/cancel`, `DELETE /api/jobs/{id}` | |
 | `POST /api/jobs/{id}/export` | merge LoRA into the base model → zip in HF format (load with vLLM, TGI or transformers) |
-| `POST /api/chat` `{job_id \| base_model, messages, enable_thinking, ...}` | returns `{thinking, answer}` |
+| `POST /api/chat` `{job_id \| base_model, messages, enable_thinking, compute?, gpu?}` | returns `{thinking, answer}` |
 
 ## Architecture
 
@@ -100,7 +149,11 @@ QLoRA roughly halves these.
 forge/
   api.py        FastAPI app + static UI
   worker.py     job queue thread; runs each job as a separate `python -m forge.trainer` process
-  trainer.py    model loading (LoRA/QLoRA/full), Trainer loop, metrics.jsonl
+  trainer.py    model loading (LoRA/QLoRA/full), Trainer loop, metrics.jsonl; no DB dependency,
+                so the same code runs locally, on Modal and from the CLI
+  hardware.py   device detection (CUDA / Apple MPS / CPU) and cloud availability
+  remote_modal.py  Modal app (GPU training + chat) and the client that drives it
+  cli.py        `python -m forge.cli info|train|chat`
   data.py       format detection, normalization, chat-template tokenization with answer-only masking
   inference.py  adapter loading, generation with <think> parsing, merge/export
   db.py         SQLite (datasets, jobs)
@@ -112,7 +165,7 @@ cancelling a job kills that process. The queue runs one job at a time on one mac
 
 ## Not built yet (natural next steps)
 - Authentication and per-user workspaces (currently single-tenant)
-- Multi-GPU / remote GPU workers (e.g. distribute jobs to a Ray cluster or cloud GPUs)
+- Multi-GPU training on one machine (accelerate/FSDP); other cloud backends (RunPod, SageMaker)
 - Built-in reasoning-trace generation from a teacher model for plain Q&A data
 - Preference tuning (DPO/GRPO) after SFT, for further gains in reasoning quality
 - Automatic benchmark evals (e.g. a held-out domain quiz, scored before and after)

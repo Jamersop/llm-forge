@@ -98,3 +98,94 @@ def test_end_to_end(client, tiny_model):
 
     r = client.post(f"/api/jobs/{job_id}/export")
     assert r.status_code == 200 and r.content[:2] == b"PK"
+
+
+def test_compute_info_and_validation(client, tiny_model):
+    info = client.get("/api/compute").json()
+    assert info["local"]["device"] in ("cuda", "mps", "cpu")
+    ds = client.get("/api/datasets").json()[0]["id"]
+    r = client.post("/api/jobs", json={"base_model": tiny_model, "dataset_ids": [ds],
+                                       "hparams": {"compute": "nowhere"}})
+    assert r.status_code == 400
+    if not info["modal"]["available"]:
+        r = client.post("/api/jobs", json={"base_model": tiny_model, "dataset_ids": [ds],
+                                           "hparams": {"compute": "modal"}})
+        assert r.status_code == 400 and "not configured" in r.json()["detail"]
+    if info["local"]["device"] != "cuda":
+        r = client.post("/api/jobs", json={"base_model": tiny_model, "dataset_ids": [ds],
+                                           "hparams": {"method": "qlora"}})
+        assert r.status_code == 400
+
+
+def test_cancel(client, tiny_model):
+    ds = client.get("/api/datasets").json()[0]["id"]
+    job_id = client.post("/api/jobs", json={"base_model": tiny_model, "dataset_ids": [ds],
+                                            "hparams": {"epochs": 500, "grad_accum": 1}}).json()["id"]
+    for _ in range(100):
+        if client.get(f"/api/jobs/{job_id}").json()["status"] == "running":
+            break
+        time.sleep(0.2)
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    time.sleep(2)
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
+
+
+def test_cli_train_and_chat(tiny_model, tmp_path):
+    out = tmp_path / "run"
+    r = subprocess.run([sys.executable, "-m", "forge.cli", "train", "--base-model", tiny_model,
+                        "--data", str(ROOT / "examples/medical_triage_reasoning.jsonl"),
+                        "--out", str(out), "--set", "epochs=1", "--set", "max_seq_len=256",
+                        "--set", "method=lora"], cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert (out / "adapter").exists() and (out / "forge_run.json").exists()
+    r = subprocess.run([sys.executable, "-m", "forge.cli", "chat", "--run", str(out), "--max-new-tokens", "8"],
+                       cwd=ROOT, input="hello\n\n", capture_output=True, text=True)
+    assert r.returncode == 0 and "model>" in r.stdout, r.stderr[-2000:]
+
+
+def test_remote_client_flow(tmp_path, monkeypatch):
+    """run_remote/_download against fake Modal objects (no account or network needed)."""
+    pytest.importorskip("modal")
+    from forge import remote_modal as rm
+    from modal.volume import FileEntryType
+
+    class FakeQueue:
+        items = [{"step": 1, "loss": 2.0}, {"step": 2, "loss": 1.5}]
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get_many(self, n, block=True, timeout=None):
+            out, self.items = self.items[:1], self.items[1:]
+            return out
+
+    class FakeCall:
+        object_id, polls = "fc-1", 0
+        def get(self, timeout=None):
+            self.polls += 1
+            if self.polls < 3:
+                raise TimeoutError
+            return {"train_loss": 1.5}
+        def cancel(self): pass
+
+    class FakeFn:
+        def with_options(self, **kw): self.kw = kw; return self
+        def spawn(self, spec, queue, token): return FakeCall()
+
+    class Entry:
+        def __init__(self, path, t=FileEntryType.FILE): self.path, self.type = path, t
+
+    class FakeVol:
+        def listdir(self, path, recursive=False):
+            return [Entry("j1/adapter", FileEntryType.DIRECTORY), Entry("j1/adapter/adapter_model.safetensors"),
+                    Entry("j1/summary.json"), Entry("j1/train.log"), Entry("j1/metrics.jsonl")]
+        def read_file(self, path): yield f"<{path}>".encode()
+
+    fn = FakeFn()
+    monkeypatch.setattr(rm, "_deployed", lambda name: fn)
+    monkeypatch.setattr(rm.modal.Queue, "ephemeral", staticmethod(lambda: FakeQueue()))
+    monkeypatch.setattr(rm.modal.Volume, "from_name", staticmethod(lambda name: FakeVol()))
+
+    summary = rm.run_remote({"job_id": "j1"}, tmp_path, gpu="H100")
+    assert fn.kw == {"gpu": "H100"} and summary == {"train_loss": 1.5, "compute": "modal:H100"}
+    assert len((tmp_path / "metrics.jsonl").read_text().splitlines()) == 2
+    assert (tmp_path / "adapter/adapter_model.safetensors").read_bytes() == b"<j1/adapter/adapter_model.safetensors>"
+    assert (tmp_path / "remote_train.log").exists() and (tmp_path / "summary.json").exists()

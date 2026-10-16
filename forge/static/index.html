@@ -48,6 +48,12 @@
   details.think div { border-left:2px solid var(--line); padding-left:8px; white-space:pre-wrap; }
   svg.chart { width:100%; height:220px; }
   .stat { font-size:22px; font-weight:600; } .stats { display:flex; gap:28px; flex-wrap:wrap; }
+  .opts { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
+  .opt { border:1px solid var(--line); border-radius:8px; padding:12px; cursor:pointer; }
+  .opt.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .opt.off { opacity:.55; cursor:not-allowed; }
+  .fit { margin-top:12px; padding:8px 12px; border-radius:6px; background:var(--bg); font-size:13px; }
+  .fit.bad { color:var(--bad); } .fit.ok { color:var(--ok); }
 </style>
 </head>
 <body>
@@ -87,10 +93,15 @@
 <!-- TRAIN -->
 <section id="train">
   <div class="card">
+    <h2>Compute</h2>
+    <div class="opts" id="computeOpts"></div>
+  </div>
+  <div class="card">
     <h2>Base model</h2>
     <div class="models" id="modelGrid"></div>
     <div style="margin-top:12px"><label>…or any Hugging Face model id / local path</label>
       <input id="customModel" placeholder="e.g. Qwen/Qwen3-14B or /models/my-base"></div>
+    <div class="fit" id="fitHint" style="display:none"></div>
   </div>
   <div class="card">
     <h2>Training data</h2>
@@ -113,7 +124,7 @@
 <section id="jobs">
   <div class="card">
     <h2>Training jobs</h2>
-    <table><thead><tr><th>Name</th><th>Base model</th><th>Status</th><th>Progress</th><th>Eval loss</th><th>Created</th></tr></thead>
+    <table><thead><tr><th>Name</th><th>Base model</th><th>Compute</th><th>Status</th><th>Progress</th><th>Eval loss</th><th>Created</th></tr></thead>
       <tbody id="jobTable"></tbody></table>
   </div>
   <div class="card" id="jobDetail" style="display:none">
@@ -140,6 +151,9 @@
       <div style="flex:2"><label>Model</label><select id="playModel"></select></div>
       <div><label>Max tokens</label><input id="playMax" type="number" value="768" style="width:100px"></div>
       <div><label>Temperature</label><input id="playTemp" type="number" step="0.1" value="0.6" style="width:90px"></div>
+      <div><label>Run on</label><select id="playCompute" style="width:auto">
+        <option value="">Where it was trained</option><option value="local">This machine</option>
+        <option value="modal">Cloud GPU</option></select></div>
       <div><label><input type="checkbox" id="playThink" checked style="width:auto"> Thinking</label></div>
       <button class="btn ghost" id="playClear">Clear</button>
     </div>
@@ -205,7 +219,7 @@ $('#dsUpload').onclick = async () => {
 };
 
 // ---- train
-let catalog = [], defaults = {}, chosenModel = null;
+let catalog = [], defaults = {}, chosenModel = null, compute = null, chosenCompute = 'local', chosenGpu = 'A10G';
 const HP = [
   ['method', 'Method', ['lora', 'qlora', 'full']], ['epochs', 'Epochs'], ['learning_rate', 'Learning rate'],
   ['batch_size', 'Batch size'], ['grad_accum', 'Grad. accumulation'], ['max_seq_len', 'Max sequence length'],
@@ -217,12 +231,15 @@ async function loadTrain() {
   if (!catalog.length) {
     ({catalog, defaults} = await api('/api/models'));
     $('#hpGrid').innerHTML = HP.map(([k, l, opts]) => `<div><label>${l}</label>${opts
-      ? `<select id="hp_${k}">${opts.map(o => `<option ${String(defaults[k]) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
+      ? `<select id="hp_${k}">${opts.map(o => `<option value="${o}" ${String(defaults[k]) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
       : `<input id="hp_${k}" value="${defaults[k]}">`}</div>`).join('');
   }
+  if (!compute) compute = await api('/api/compute');
+  renderCompute();
   $('#modelGrid').innerHTML = catalog.map(m => `<div class="model ${m.id === chosenModel ? 'on' : ''}" data-id="${m.id}">
     <b>${esc(m.id)}</b><span class="pill">${m.params}</span> ${m.reasoning ? '<span class="pill">reasoning</span>' : ''}
     <div class="muted" style="font-size:12px;margin-top:4px">${esc(m.notes)}</div></div>`).join('');
+  updateFit();
   datasets = await api('/api/datasets');
   $('#dsChecks').innerHTML = datasets.length ? datasets.map(d => `<label style="font-size:14px;color:var(--fg)">
     <input type="checkbox" value="${d.id}" style="width:auto"> ${esc(d.name)}
@@ -233,14 +250,67 @@ $('#modelGrid').onclick = e => {
   const el = e.target.closest('.model'); if (!el) return;
   chosenModel = el.dataset.id; $('#customModel').value = '';
   document.querySelectorAll('.model').forEach(m => m.classList.toggle('on', m === el));
+  updateFit();
 };
+$('#customModel').oninput = updateFit;
+
+function renderCompute() {
+  const L = compute.local, M = compute.modal;
+  const localDesc = L.device === 'cuda' ? `${esc(L.name)} · ${L.memory_gb} GB${L.count > 1 ? ` · ${L.count} GPUs` : ''}`
+    : L.device === 'mps' ? 'Apple Silicon GPU — LoRA on small models (≤ 4B)'
+    : 'CPU only — fine for tiny test models, very slow for real ones';
+  $('#computeOpts').innerHTML = `
+    <div class="opt ${chosenCompute === 'local' ? 'on' : ''}" data-c="local"><b>This machine</b>
+      <div class="muted" style="font-size:12px">${localDesc}</div></div>
+    <div class="opt ${chosenCompute === 'modal' ? 'on' : ''} ${M.available ? '' : 'off'}" data-c="modal"><b>Cloud GPU (Modal)</b>
+      <div class="muted" style="font-size:12px">${M.available ? 'Rent a GPU per job, billed per second.' : 'Not set up: ' + esc(M.reason) + '. See README.'}</div>
+      ${M.available ? `<select id="gpuSel" style="margin-top:8px">${M.gpus.map(g => `<option value="${g.id}" ${g.id === chosenGpu ? 'selected' : ''}>${g.id} · ${g.memory_gb} GB</option>`).join('')}</select>` : ''}
+    </div>`;
+  const q = document.querySelector('#hp_method option[value="qlora"]');
+  if (q) q.disabled = chosenCompute === 'local' && L.device !== 'cuda';
+  if (q?.disabled && $('#hp_method').value === 'qlora') $('#hp_method').value = 'lora';
+}
+$('#computeOpts').onclick = e => {
+  if (e.target.id === 'gpuSel') return;
+  const el = e.target.closest('.opt'); if (!el || el.classList.contains('off')) return;
+  chosenCompute = el.dataset.c; renderCompute(); updateFit();
+};
+$('#computeOpts').onchange = e => { if (e.target.id === 'gpuSel') { chosenGpu = e.target.value; updateFit(); } };
+document.addEventListener('change', e => { if (e.target.id === 'hp_method') updateFit(); });
+
+// Rough GPU memory needed for training (weights + optimizer + activations), in GB.
+function needGB(paramsB, method) {
+  return method === 'full' ? paramsB * 16 + 4 : method === 'qlora' ? paramsB * 0.7 + 4 : paramsB * 2.2 + 4;
+}
+function paramsOf(id) {
+  const c = catalog.find(m => m.id === id); const src = c ? c.params : id;
+  const m = /(\d+(?:\.\d+)?)\s*([BM])\b/i.exec(src || ''); if (!m) return null;
+  return m[2].toUpperCase() === 'M' ? m[1] / 1000 : Number(m[1]);
+}
+function updateFit() {
+  const el = $('#fitHint'), id = $('#customModel').value.trim() || chosenModel, b = id && paramsOf(id);
+  if (!b || !compute) return el.style.display = 'none';
+  const method = $('#hp_method')?.value || 'lora', need = needGB(b, method);
+  let have, where;
+  if (chosenCompute === 'modal') { const g = compute.modal.gpus.find(g => g.id === chosenGpu); have = g.memory_gb; where = g.id; }
+  else if (compute.local.device === 'cuda') { have = compute.local.memory_gb; where = 'your GPU'; }
+  else { el.style.display = 'block'; el.className = 'fit' + (b > 0.5 ? ' bad' : '');
+    el.textContent = compute.local.device === 'mps'
+      ? `≈${need.toFixed(0)} GB of unified memory needed for ${method}. Training on Apple GPUs is slower than on NVIDIA; use a cloud GPU for > 4B models.`
+      : `No GPU here: ${b > 0.5 ? 'a model this size would take days on CPU. Pick "Cloud GPU" or a free Kaggle/Colab GPU (see notebooks/).' : 'small enough to try on CPU.'}`;
+    return; }
+  el.style.display = 'block';
+  const ok = need <= have;
+  el.className = 'fit ' + (ok ? 'ok' : 'bad');
+  el.textContent = `≈${need.toFixed(0)} GB needed for ${method} on a ${b}B model — ${ok ? 'fits on ' + where : 'too big for ' + where + ' (' + have + ' GB). Try ' + (method === 'lora' ? 'qlora, ' : '') + 'a smaller model or a bigger GPU'}. Reduce batch size / max length if you hit out-of-memory.`;
+}
 $('#startJob').onclick = async () => {
   const base = $('#customModel').value.trim() || chosenModel;
   const ids = [...document.querySelectorAll('#dsChecks input:checked')].map(i => i.value);
   const msg = $('#trainMsg'); msg.className = 'err';
   if (!base) return msg.textContent = 'Pick a base model.';
   if (!ids.length) return msg.textContent = 'Select at least one dataset.';
-  const hparams = {system_prompt: $('#hp_system_prompt').value};
+  const hparams = {system_prompt: $('#hp_system_prompt').value, compute: chosenCompute, gpu: chosenGpu};
   for (const [k] of HP) {
     const v = $('#hp_' + k).value;
     hparams[k] = k === 'method' ? v : k === 'train_on_prompt' ? v === 'true' : Number(v);
@@ -257,10 +327,10 @@ let jobs = [], openJob = null, timer = null;
 async function loadJobs() {
   jobs = await api('/api/jobs');
   $('#jobTable').innerHTML = jobs.map(j => `<tr class="click" data-id="${j.id}">
-    <td>${esc(j.name)}</td><td>${esc(j.base_model)}</td><td><span class="pill s-${j.status}">${j.status}</span></td>
+    <td>${esc(j.name)}</td><td>${esc(j.base_model)}</td><td class="muted">${j.hparams.compute === 'modal' ? 'cloud ' + esc(j.hparams.gpu) : 'local'}</td><td><span class="pill s-${j.status}">${j.status}</span></td>
     <td id="prog_${j.id}">${j.status === 'completed' ? '100%' : ''}</td>
     <td>${j.metrics?.eval_loss?.toFixed(3) ?? j.metrics?.train_loss?.toFixed(3) ?? '–'}</td><td class="muted">${ago(j.created_at)}</td></tr>`).join('')
-    || '<tr><td colspan=6 class="muted">No jobs yet.</td></tr>';
+    || '<tr><td colspan=7 class="muted">No jobs yet.</td></tr>';
   if (openJob) loadJob(openJob);
   clearTimeout(timer);
   if (jobs.some(j => ['queued', 'running'].includes(j.status)) && $('#jobs').classList.contains('on')) timer = setTimeout(loadJobs, 3000);
@@ -282,6 +352,7 @@ async function loadJob(id) {
     ['Step', maxStep ? `${step}/${maxStep}` : '–'], ['Train loss', (m.train_loss ?? last?.loss)?.toFixed(3)],
     ['Eval loss', m.eval_loss?.toFixed(3)], ['Eval perplexity', m.eval_perplexity?.toFixed(2)],
     ['Examples', fmt(m.data?.train_examples)], ['Method', `${hp.method} · ${hp.epochs} ep · lr ${hp.learning_rate}`],
+    ['Compute', hp.compute === 'modal' ? `cloud ${hp.gpu}` : (m.device || 'local')],
   ].map(([k, v]) => `<div><div class="muted" style="font-size:12px">${k}</div><div class="stat">${v ?? '–'}</div></div>`).join('');
   drawChart(h);
   $('#jdLogs').textContent = await api(`/api/jobs/${id}/logs?tail=150`);
@@ -340,7 +411,7 @@ async function send() {
   try {
     const r = await api('/api/chat', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({
       job_id: kind === 'job' ? id : null, base_model: kind === 'base' ? id : null, messages: history,
-      max_new_tokens: Number($('#playMax').value), temperature: Number($('#playTemp').value), enable_thinking: $('#playThink').checked})});
+      compute: $('#playCompute').value || null, max_new_tokens: Number($('#playMax').value), temperature: Number($('#playTemp').value), enable_thinking: $('#playThink').checked})});
     pending.innerHTML = (r.thinking ? `<details class="think"><summary>Reasoning (${r.thinking.split(/\s+/).length} words)</summary><div>${esc(r.thinking)}</div></details>` : '')
       + esc(r.answer || '(no answer — raise max tokens)');
     history.push({role: 'assistant', content: r.answer});

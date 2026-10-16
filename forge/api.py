@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import data, db
+from . import data, db, hardware
 from .config import DATASETS_DIR, DEFAULT_HPARAMS, MODEL_CATALOG, RUNS_DIR
 from .worker import Worker
 
@@ -43,6 +43,12 @@ def _404(what: str):
 @app.get("/api/models")
 def list_models():
     return {"catalog": MODEL_CATALOG, "defaults": DEFAULT_HPARAMS}
+
+
+@app.get("/api/compute")
+def compute():
+    """Hardware on this machine + whether cloud GPUs are configured."""
+    return hardware.compute_info()
 
 
 # ---- datasets -----------------------------------------------------------------
@@ -100,6 +106,17 @@ def create_job(req: JobRequest):
     hp = {**DEFAULT_HPARAMS, **req.hparams}
     if hp["method"] not in ("lora", "qlora", "full"):
         raise HTTPException(400, "method must be lora, qlora or full")
+    if hp["compute"] == "modal":
+        modal = hardware.modal_info()
+        if not modal["available"]:
+            raise HTTPException(400, f"cloud GPUs not configured: {modal['reason']}")
+        if hp["gpu"] not in {g["id"] for g in modal["gpus"]}:
+            raise HTTPException(400, f"unknown GPU type {hp['gpu']!r}")
+    elif hp["compute"] == "local":
+        if hp["method"] == "qlora" and hardware.pick_device() != "cuda":
+            raise HTTPException(400, "QLoRA needs an NVIDIA GPU; use lora, or a cloud GPU")
+    else:
+        raise HTTPException(400, "compute must be local or modal")
     name = req.name or f"{req.base_model.split('/')[-1]}-ft"
     return db.add_job(name, req.base_model.strip(), req.dataset_ids, hp)
 
@@ -132,11 +149,14 @@ def cancel_job(job_id: str):
 
 
 @app.delete("/api/jobs/{job_id}")
-def delete_job(job_id: str):
+async def delete_job(job_id: str):
     job = db.get_job(job_id) or _404("job")
     if job["status"] in ("queued", "running"):
         raise HTTPException(409, "cancel the job first")
     shutil.rmtree(RUNS_DIR / job_id, ignore_errors=True)
+    if job["hparams"].get("compute") == "modal":
+        from .remote_modal import delete_remote_run
+        await run_in_threadpool(delete_remote_run, job_id)
     with db.connect() as c:
         c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
     return {"ok": True}
@@ -149,7 +169,7 @@ async def export_job(job_id: str):
     job = db.get_job(job_id) or _404("job")
     if job["status"] != "completed":
         raise HTTPException(409, "job has not completed")
-    folder = await run_in_threadpool(inference.merge, job_id)
+    folder = await run_in_threadpool(inference.merge, job_id, job["base_model"])
     zip_path = await run_in_threadpool(shutil.make_archive, str(folder), "zip", folder)
     return FileResponse(zip_path, filename=f"{job['name']}.zip")
 
@@ -163,6 +183,8 @@ class ChatRequest(BaseModel):
     max_new_tokens: int = Field(512, ge=1, le=8192)
     temperature: float = Field(0.6, ge=0, le=2)
     enable_thinking: bool = True
+    compute: str | None = None      # local | modal; default: where the job was trained
+    gpu: str = "A10G"
 
 
 @app.post("/api/chat")
@@ -171,22 +193,31 @@ async def chat(req: ChatRequest):
     from . import inference
     if models is None:
         models = inference.ModelCache()
+    base, compute = req.base_model, req.compute
     if req.job_id:
         job = db.get_job(req.job_id) or _404("job")
         if job["status"] != "completed":
             raise HTTPException(409, "job has not completed")
-    elif not req.base_model:
+        base = job["base_model"]
+        compute = compute or job["hparams"].get("compute", "local")
+    elif not base:
         raise HTTPException(400, "give job_id or base_model")
+    params = {"max_new_tokens": req.max_new_tokens, "temperature": req.temperature,
+              "enable_thinking": req.enable_thinking}
 
     def _go():
+        if compute == "modal":
+            from .remote_modal import chat_remote
+            return chat_remote(req.job_id, base, req.messages, params, gpu=req.gpu)
         with models.lock:
-            model, tok = models.get(req.job_id, req.base_model)
-            return inference.generate(model, tok, req.messages, req.max_new_tokens,
-                                      req.temperature, enable_thinking=req.enable_thinking)
+            model, tok = models.get(req.job_id, base)
+            return inference.generate(model, tok, req.messages, **params)
     try:
         return await run_in_threadpool(_go)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="ui")

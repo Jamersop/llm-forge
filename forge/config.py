@@ -40,6 +40,8 @@ MODEL_CATALOG = [
 
 # Default hyperparameters; every field can be overridden per job.
 DEFAULT_HPARAMS = {
+    "compute": "local",          # local (this machine: CUDA / Apple MPS / CPU) | modal (cloud GPU)
+    "gpu": "A10G",               # GPU type when compute == "modal"
     "method": "lora",            # lora | qlora | full
     "epochs": 3,
     "learning_rate": 2e-4,

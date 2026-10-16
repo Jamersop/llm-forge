@@ -7,9 +7,9 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from . import data, db
+from . import data
 from .config import RUNS_DIR
-from .trainer import pick_dtype
+from .hardware import pick_device, pick_dtype
 
 
 class ModelCache:
@@ -20,13 +20,17 @@ class ModelCache:
         self.model = self.tokenizer = None
         self.lock = threading.Lock()
 
-    def get(self, job_id: str | None, base: str | None = None):
+    def get(self, job_id: str | None, base: str):
         key = job_id or f"base:{base}"
         if key != self.key:
             self.model = self.tokenizer = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            self.model, self.tokenizer = load(job_id, base)
+            if job_id is None:
+                self.model, self.tokenizer = load_weights(base)
+            else:
+                path, is_adapter = artifact_dir(job_id)
+                self.model, self.tokenizer = load_weights(base, path, is_adapter)
             self.key = key
         return self.model, self.tokenizer
 
@@ -40,25 +44,20 @@ def artifact_dir(job_id: str) -> tuple[Path, bool]:
     raise FileNotFoundError(f"job {job_id} has no trained weights yet")
 
 
-def load(job_id: str | None, base: str | None = None):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if job_id is None:  # untuned base model, for side-by-side comparison
-        tok = AutoTokenizer.from_pretrained(base)
-        model = AutoModelForCausalLM.from_pretrained(base, dtype=pick_dtype()).to(device)
+def load_weights(base: str, path: Path | None = None, is_adapter: bool = False):
+    """Base model alone, base + LoRA adapter at `path`, or a full model at `path`."""
+    device = pick_device()
+    dtype = torch.float16 if device == "mps" else pick_dtype(device)
+    tok = AutoTokenizer.from_pretrained(path or base)
+    if path is not None and not is_adapter:
+        model = AutoModelForCausalLM.from_pretrained(path, dtype=dtype)
     else:
-        path, is_adapter = artifact_dir(job_id)
-        tok = AutoTokenizer.from_pretrained(path)
-        if is_adapter:
+        model = AutoModelForCausalLM.from_pretrained(base, dtype=dtype)
+        if path is not None:
             from peft import PeftModel
-            base_model = AutoModelForCausalLM.from_pretrained(db.get_job(job_id)["base_model"],
-                                                              dtype=pick_dtype())
-            model = PeftModel.from_pretrained(base_model, path)
-        else:
-            model = AutoModelForCausalLM.from_pretrained(path, dtype=pick_dtype())
-        model = model.to(device)
+            model = PeftModel.from_pretrained(model, path)
     data.ensure_chat_template(tok)
-    model.eval()
-    return model, tok
+    return model.to(device).eval(), tok
 
 
 @torch.no_grad()
@@ -81,14 +80,14 @@ def generate(model, tok, messages: list[dict], max_new_tokens=512, temperature=0
     return {"thinking": thinking, "answer": answer, "raw": text, "new_tokens": int(new.shape[0])}
 
 
-def merge(job_id: str) -> Path:
+def merge(job_id: str, base_model: str) -> Path:
     """Fold a LoRA adapter into the base weights -> standalone HF model folder."""
     path, is_adapter = artifact_dir(job_id)
     if not is_adapter:
         return path
     from peft import PeftModel
     target = RUNS_DIR / job_id / "merged"
-    base = AutoModelForCausalLM.from_pretrained(db.get_job(job_id)["base_model"], dtype=pick_dtype())
+    base = AutoModelForCausalLM.from_pretrained(base_model, dtype="auto")  # keep native precision
     merged = PeftModel.from_pretrained(base, path).merge_and_unload()
     merged.save_pretrained(target, safe_serialization=True)
     AutoTokenizer.from_pretrained(path).save_pretrained(target)

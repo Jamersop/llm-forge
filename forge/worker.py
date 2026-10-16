@@ -41,9 +41,10 @@ class Worker:
         job = db.get_job(job_id)
         if job is None or job["status"] not in ("queued", "running"):
             return False
+        # Mark first so the worker doesn't record the killed process as a failure.
+        db.update_job(job_id, status="cancelled", finished_at=time.time())
         if job["status"] == "running" and self.job_id == job_id and self.proc:
             os.killpg(self.proc.pid, signal.SIGTERM)
-        db.update_job(job_id, status="cancelled", finished_at=time.time())
         return True
 
     def _loop(self):

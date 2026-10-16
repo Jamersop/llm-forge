@@ -8,3 +8,5 @@ uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 # GPU only, for QLoRA (4-bit):
 # bitsandbytes>=0.43
+# Optional, to train on rented cloud GPUs (see README "Where to train"):
+# modal>=1.0

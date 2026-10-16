@@ -1,0 +1,10 @@
+torch>=2.3
+transformers>=4.51
+peft>=0.13
+accelerate>=0.34
+datasets>=2.20
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+# GPU only, for QLoRA (4-bit):
+# bitsandbytes>=0.43

@@ -1,0 +1,5 @@
+.venv/
+forge_data/
+tiny-model/
+__pycache__/
+.pytest_cache/

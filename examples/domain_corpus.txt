@@ -1,0 +1,4 @@
+Triage is the process of sorting patients by the urgency of their need for care. The Manchester Triage System assigns one of five priority categories: immediate (red), very urgent (orange), urgent (yellow), standard (green) and non-urgent (blue).
+
+
+Red-flag symptoms are findings that point to a serious underlying condition and call for urgent assessment. Examples include a non-blanching rash with fever, chest pain with sweating, sudden focal neurological deficit, and stridor at rest.

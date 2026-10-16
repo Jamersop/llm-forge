@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Forge</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --muted:#667085; --line:#e4e7ec;
+          --accent:#3b5bdb; --ok:#2f9e44; --bad:#e03131; --warn:#e8590c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#181b21; --fg:#e6e8eb; --muted:#98a2b3; --line:#2a2f37; --accent:#748ffc; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:24px; align-items:center; padding:12px 24px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { font-size:17px; margin:0; }
+  nav button { background:none; border:0; color:var(--muted); padding:8px 12px; font:inherit; cursor:pointer; border-radius:6px; }
+  nav button.on { color:var(--fg); background:var(--bg); font-weight:600; }
+  main { max-width:1100px; margin:24px auto; padding:0 16px; }
+  section { display:none; } section.on { display:block; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input, select, textarea { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  textarea { resize:vertical; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:12px; }
+  .row { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
+  .btn { background:var(--accent); color:#fff; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; font:inherit; font-weight:600; }
+  .btn.ghost { background:none; color:var(--accent); border:1px solid var(--line); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:var(--muted); font-weight:500; }
+  tr.click { cursor:pointer; } tr.click:hover td { background:var(--bg); }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--bg); border:1px solid var(--line); white-space:nowrap; }
+  .s-completed { color:var(--ok); } .s-failed { color:var(--bad); } .s-running { color:var(--accent); } .s-cancelled { color:var(--muted); }
+  .muted { color:var(--muted); } .err { color:var(--bad); }
+  pre { background:var(--bg); padding:10px; border-radius:6px; overflow:auto; max-height:320px; font-size:12px; white-space:pre-wrap; }
+  .models { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; }
+  .model { border:1px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; }
+  .model.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .model b { display:block; font-size:13px; word-break:break-all; }
+  .chat { display:flex; flex-direction:column; gap:10px; min-height:200px; max-height:520px; overflow:auto; padding:4px; }
+  .msg { padding:10px 12px; border-radius:8px; max-width:85%; white-space:pre-wrap; }
+  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; }
+  .msg.assistant { align-self:flex-start; background:var(--bg); border:1px solid var(--line); }
+  details.think { font-size:12px; color:var(--muted); margin-bottom:6px; }
+  details.think div { border-left:2px solid var(--line); padding-left:8px; white-space:pre-wrap; }
+  svg.chart { width:100%; height:220px; }
+  .stat { font-size:22px; font-weight:600; } .stats { display:flex; gap:28px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚒ LLM Forge</h1>
+  <nav id="nav">
+    <button data-tab="datasets" class="on">1 · Data</button>
+    <button data-tab="train">2 · Train</button>
+    <button data-tab="jobs">3 · Jobs</button>
+    <button data-tab="play">4 · Playground</button>
+  </nav>
+</header>
+<main>
+
+<!-- DATASETS -->
+<section id="datasets" class="on">
+  <div class="card">
+    <h2>Upload training data</h2>
+    <p class="muted">JSONL / JSON / CSV with <code>instruction</code>+<code>output</code> (optionally <code>reasoning</code>),
+      chat <code>messages</code>, or plain <code>text</code>. Plain .txt / .md files become a domain corpus.
+      Adding a <code>reasoning</code> field teaches the model to think step by step before answering.</p>
+    <div class="row">
+      <div style="flex:2"><label>File</label><input type="file" id="dsFile" accept=".jsonl,.json,.csv,.txt,.md"></div>
+      <div style="flex:1"><label>Name (optional)</label><input id="dsName"></div>
+      <button class="btn" id="dsUpload">Upload</button>
+    </div>
+    <p id="dsMsg"></p>
+  </div>
+  <div class="card">
+    <h2>Datasets</h2>
+    <table><thead><tr><th>Name</th><th>Type</th><th>Records</th><th>With reasoning</th><th>~Tokens</th><th></th></tr></thead>
+      <tbody id="dsTable"></tbody></table>
+    <pre id="dsPreview" style="display:none"></pre>
+  </div>
+</section>
+
+<!-- TRAIN -->
+<section id="train">
+  <div class="card">
+    <h2>Base model</h2>
+    <div class="models" id="modelGrid"></div>
+    <div style="margin-top:12px"><label>…or any Hugging Face model id / local path</label>
+      <input id="customModel" placeholder="e.g. Qwen/Qwen3-14B or /models/my-base"></div>
+  </div>
+  <div class="card">
+    <h2>Training data</h2>
+    <div id="dsChecks" class="muted">Upload a dataset first.</div>
+  </div>
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="grid" id="hpGrid"></div>
+    <div style="margin-top:12px"><label>System prompt (applied to examples without one)</label>
+      <textarea id="hp_system_prompt" rows="2" placeholder="You are an expert assistant in …"></textarea></div>
+    <div class="row" style="margin-top:14px">
+      <div style="flex:1"><label>Job name</label><input id="jobName" placeholder="optional"></div>
+      <button class="btn" id="startJob">Start training</button>
+    </div>
+    <p id="trainMsg"></p>
+  </div>
+</section>
+
+<!-- JOBS -->
+<section id="jobs">
+  <div class="card">
+    <h2>Training jobs</h2>
+    <table><thead><tr><th>Name</th><th>Base model</th><th>Status</th><th>Progress</th><th>Eval loss</th><th>Created</th></tr></thead>
+      <tbody id="jobTable"></tbody></table>
+  </div>
+  <div class="card" id="jobDetail" style="display:none">
+    <div class="row" style="justify-content:space-between">
+      <h2 id="jdTitle" style="margin:0"></h2>
+      <div class="row">
+        <button class="btn ghost" id="jdCancel">Cancel</button>
+        <button class="btn ghost" id="jdExport">Download merged model</button>
+        <button class="btn ghost" id="jdDelete">Delete</button>
+        <button class="btn" id="jdChat">Open in playground</button>
+      </div>
+    </div>
+    <p id="jdErr" class="err"></p>
+    <div class="stats" id="jdStats"></div>
+    <svg class="chart" id="jdChart"></svg>
+    <details><summary class="muted">Logs</summary><pre id="jdLogs"></pre></details>
+  </div>
+</section>
+
+<!-- PLAYGROUND -->
+<section id="play">
+  <div class="card">
+    <div class="row">
+      <div style="flex:2"><label>Model</label><select id="playModel"></select></div>
+      <div><label>Max tokens</label><input id="playMax" type="number" value="768" style="width:100px"></div>
+      <div><label>Temperature</label><input id="playTemp" type="number" step="0.1" value="0.6" style="width:90px"></div>
+      <div><label><input type="checkbox" id="playThink" checked style="width:auto"> Thinking</label></div>
+      <button class="btn ghost" id="playClear">Clear</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="chat" id="chatLog"><p class="muted">Ask your fine-tuned model something from its domain. Compare against the untuned base model by switching the selector.</p></div>
+    <div class="row" style="margin-top:12px">
+      <textarea id="chatIn" rows="2" style="flex:1" placeholder="Message…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <button class="btn" id="chatSend">Send</button>
+    </div>
+  </div>
+</section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, opts);
+  if (!r.ok) { let d; try { d = (await r.json()).detail } catch { d = r.statusText } throw new Error(typeof d === 'string' ? d : JSON.stringify(d)); }
+  return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = n => n == null ? '–' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'k' : n;
+const ago = t => { const s = Date.now()/1000 - t; return s < 60 ? 'just now' : s < 3600 ? Math.floor(s/60)+'m ago' : s < 86400 ? Math.floor(s/3600)+'h ago' : Math.floor(s/86400)+'d ago'; };
+
+// tabs
+const show = tab => {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === tab));
+  ({datasets: loadDatasets, train: loadTrain, jobs: loadJobs, play: loadPlay})[tab]();
+};
+$('#nav').onclick = e => e.target.dataset.tab && show(e.target.dataset.tab);
+
+// ---- datasets
+let datasets = [];
+async function loadDatasets() {
+  datasets = await api('/api/datasets');
+  $('#dsTable').innerHTML = datasets.map(d => `<tr>
+    <td>${esc(d.name)}</td><td><span class="pill">${d.kind === 'chat' ? 'Q&A / chat' : 'domain corpus'}</span></td>
+    <td>${d.stats.records}${d.stats.skipped ? ` <span class="muted">(${d.stats.skipped} skipped)</span>` : ''}</td>
+    <td>${d.kind === 'chat' ? d.stats.with_reasoning : '–'}</td><td>${fmt(d.stats.approx_tokens)}</td>
+    <td style="text-align:right"><button class="btn ghost" data-prev="${d.id}">Preview</button>
+      <button class="btn ghost" data-del="${d.id}">Delete</button></td></tr>`).join('')
+    || '<tr><td colspan=6 class="muted">No datasets yet.</td></tr>';
+}
+$('#dsTable').onclick = async e => {
+  if (e.target.dataset.prev) {
+    const p = $('#dsPreview'); p.style.display = 'block';
+    p.textContent = JSON.stringify(await api(`/api/datasets/${e.target.dataset.prev}/preview?n=3`), null, 2);
+  } else if (e.target.dataset.del && confirm('Delete this dataset?')) {
+    await api(`/api/datasets/${e.target.dataset.del}`, {method: 'DELETE'}); loadDatasets();
+  }
+};
+$('#dsUpload').onclick = async () => {
+  const f = $('#dsFile').files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('file', f); fd.append('name', $('#dsName').value);
+  $('#dsMsg').textContent = 'Uploading…'; $('#dsMsg').className = 'muted';
+  try {
+    const d = await api('/api/datasets', {method: 'POST', body: fd});
+    $('#dsMsg').textContent = `Added "${d.name}": ${d.stats.records} records` + (d.stats.errors.length ? `; skipped: ${d.stats.errors.join('; ')}` : '');
+    $('#dsFile').value = ''; $('#dsName').value = ''; loadDatasets();
+  } catch (err) { $('#dsMsg').textContent = err.message; $('#dsMsg').className = 'err'; }
+};
+
+// ---- train
+let catalog = [], defaults = {}, chosenModel = null;
+const HP = [
+  ['method', 'Method', ['lora', 'qlora', 'full']], ['epochs', 'Epochs'], ['learning_rate', 'Learning rate'],
+  ['batch_size', 'Batch size'], ['grad_accum', 'Grad. accumulation'], ['max_seq_len', 'Max sequence length'],
+  ['lora_r', 'LoRA rank'], ['lora_alpha', 'LoRA alpha'], ['lora_dropout', 'LoRA dropout'],
+  ['warmup_ratio', 'Warmup ratio'], ['eval_ratio', 'Validation split'], ['seed', 'Seed'],
+  ['train_on_prompt', 'Loss on prompt too', ['false', 'true']],
+];
+async function loadTrain() {
+  if (!catalog.length) {
+    ({catalog, defaults} = await api('/api/models'));
+    $('#hpGrid').innerHTML = HP.map(([k, l, opts]) => `<div><label>${l}</label>${opts
+      ? `<select id="hp_${k}">${opts.map(o => `<option ${String(defaults[k]) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
+      : `<input id="hp_${k}" value="${defaults[k]}">`}</div>`).join('');
+  }
+  $('#modelGrid').innerHTML = catalog.map(m => `<div class="model ${m.id === chosenModel ? 'on' : ''}" data-id="${m.id}">
+    <b>${esc(m.id)}</b><span class="pill">${m.params}</span> ${m.reasoning ? '<span class="pill">reasoning</span>' : ''}
+    <div class="muted" style="font-size:12px;margin-top:4px">${esc(m.notes)}</div></div>`).join('');
+  datasets = await api('/api/datasets');
+  $('#dsChecks').innerHTML = datasets.length ? datasets.map(d => `<label style="font-size:14px;color:var(--fg)">
+    <input type="checkbox" value="${d.id}" style="width:auto"> ${esc(d.name)}
+    <span class="muted">— ${d.kind === 'chat' ? 'Q&A' : 'corpus'}, ${d.stats.records} records</span></label>`).join('')
+    : 'Upload a dataset first.';
+}
+$('#modelGrid').onclick = e => {
+  const el = e.target.closest('.model'); if (!el) return;
+  chosenModel = el.dataset.id; $('#customModel').value = '';
+  document.querySelectorAll('.model').forEach(m => m.classList.toggle('on', m === el));
+};
+$('#startJob').onclick = async () => {
+  const base = $('#customModel').value.trim() || chosenModel;
+  const ids = [...document.querySelectorAll('#dsChecks input:checked')].map(i => i.value);
+  const msg = $('#trainMsg'); msg.className = 'err';
+  if (!base) return msg.textContent = 'Pick a base model.';
+  if (!ids.length) return msg.textContent = 'Select at least one dataset.';
+  const hparams = {system_prompt: $('#hp_system_prompt').value};
+  for (const [k] of HP) {
+    const v = $('#hp_' + k).value;
+    hparams[k] = k === 'method' ? v : k === 'train_on_prompt' ? v === 'true' : Number(v);
+  }
+  try {
+    await api('/api/jobs', {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({name: $('#jobName').value, base_model: base, dataset_ids: ids, hparams})});
+    show('jobs');
+  } catch (err) { msg.textContent = err.message; }
+};
+
+// ---- jobs
+let jobs = [], openJob = null, timer = null;
+async function loadJobs() {
+  jobs = await api('/api/jobs');
+  $('#jobTable').innerHTML = jobs.map(j => `<tr class="click" data-id="${j.id}">
+    <td>${esc(j.name)}</td><td>${esc(j.base_model)}</td><td><span class="pill s-${j.status}">${j.status}</span></td>
+    <td id="prog_${j.id}">${j.status === 'completed' ? '100%' : ''}</td>
+    <td>${j.metrics?.eval_loss?.toFixed(3) ?? j.metrics?.train_loss?.toFixed(3) ?? '–'}</td><td class="muted">${ago(j.created_at)}</td></tr>`).join('')
+    || '<tr><td colspan=6 class="muted">No jobs yet.</td></tr>';
+  if (openJob) loadJob(openJob);
+  clearTimeout(timer);
+  if (jobs.some(j => ['queued', 'running'].includes(j.status)) && $('#jobs').classList.contains('on')) timer = setTimeout(loadJobs, 3000);
+}
+$('#jobTable').onclick = e => { const tr = e.target.closest('tr[data-id]'); if (tr) { openJob = tr.dataset.id; loadJob(openJob); } };
+async function loadJob(id) {
+  const j = await api('/api/jobs/' + id);
+  $('#jobDetail').style.display = 'block';
+  $('#jdTitle').textContent = `${j.name} · ${j.status}`;
+  $('#jdErr').textContent = j.error || '';
+  $('#jdCancel').style.display = ['queued', 'running'].includes(j.status) ? '' : 'none';
+  $('#jdExport').style.display = $('#jdChat').style.display = j.status === 'completed' ? '' : 'none';
+  $('#jdDelete').style.display = ['queued', 'running'].includes(j.status) ? 'none' : '';
+  const h = j.history, last = [...h].reverse().find(r => r.loss != null);
+  const maxStep = h.length ? h[h.length - 1].max_steps : 0, step = last?.step ?? 0;
+  if (maxStep && j.status === 'running') { const c = $('#prog_' + id); if (c) c.textContent = Math.round(100 * step / maxStep) + '%'; }
+  const m = j.metrics || {}, hp = j.hparams;
+  $('#jdStats').innerHTML = [
+    ['Step', maxStep ? `${step}/${maxStep}` : '–'], ['Train loss', (m.train_loss ?? last?.loss)?.toFixed(3)],
+    ['Eval loss', m.eval_loss?.toFixed(3)], ['Eval perplexity', m.eval_perplexity?.toFixed(2)],
+    ['Examples', fmt(m.data?.train_examples)], ['Method', `${hp.method} · ${hp.epochs} ep · lr ${hp.learning_rate}`],
+  ].map(([k, v]) => `<div><div class="muted" style="font-size:12px">${k}</div><div class="stat">${v ?? '–'}</div></div>`).join('');
+  drawChart(h);
+  $('#jdLogs').textContent = await api(`/api/jobs/${id}/logs?tail=150`);
+}
+function drawChart(h) {
+  const svg = $('#jdChart'), W = svg.clientWidth || 800, H = 220, P = 36;
+  const tr = h.filter(r => r.loss != null), ev = h.filter(r => r.eval_loss != null);
+  if (!tr.length) return svg.innerHTML = `<text x="${P}" y="${H/2}" fill="currentColor" opacity=".5">Loss curve appears once training starts.</text>`;
+  const maxS = Math.max(...h.map(r => r.step), 1), ys = [...tr.map(r => r.loss), ...ev.map(r => r.eval_loss)];
+  const lo = Math.min(...ys), hi = Math.max(...ys), sx = s => P + (W - P - 10) * s / maxS, sy = v => 10 + (H - 40) * (1 - (v - lo) / ((hi - lo) || 1));
+  const line = (rows, k) => rows.map((r, i) => `${i ? 'L' : 'M'}${sx(r.step).toFixed(1)},${sy(r[k]).toFixed(1)}`).join('');
+  svg.innerHTML = `<g fill="currentColor" opacity=".55" font-size="11">
+      <text x="2" y="14">${hi.toFixed(2)}</text><text x="2" y="${H-30}">${lo.toFixed(2)}</text>
+      <text x="${W-60}" y="${H-6}">step ${maxS}</text></g>
+    <line x1="${P}" x2="${W-10}" y1="${H-30}" y2="${H-30}" stroke="currentColor" opacity=".15"/>
+    <path d="${line(tr, 'loss')}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    ${ev.length ? `<path d="${line(ev, 'eval_loss')}" fill="none" stroke="var(--warn)" stroke-width="2" stroke-dasharray="5 4"/>
+      ${ev.map(r => `<circle cx="${sx(r.step)}" cy="${sy(r.eval_loss)}" r="3.5" fill="var(--warn)"/>`).join('')}` : ''}
+    <g font-size="11"><rect x="${W-170}" y="8" width="10" height="3" fill="var(--accent)"/><text x="${W-155}" y="13" fill="currentColor">train loss</text>
+      <rect x="${W-90}" y="8" width="10" height="3" fill="var(--warn)"/><text x="${W-75}" y="13" fill="currentColor">eval loss</text></g>`;
+}
+$('#jdCancel').onclick = async () => { await api(`/api/jobs/${openJob}/cancel`, {method: 'POST'}); loadJobs(); };
+$('#jdDelete').onclick = async () => { if (!confirm('Delete job and its weights?')) return;
+  await api(`/api/jobs/${openJob}`, {method: 'DELETE'}); openJob = null; $('#jobDetail').style.display = 'none'; loadJobs(); };
+$('#jdExport').onclick = async () => {
+  const b = $('#jdExport'); b.disabled = true; b.textContent = 'Merging…';
+  try {
+    const r = await fetch(`/api/jobs/${openJob}/export`, {method: 'POST'}); if (!r.ok) throw new Error((await r.json()).detail);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = 'model.zip'; a.click();
+  } catch (err) { alert(err.message); } finally { b.disabled = false; b.textContent = 'Download merged model'; }
+};
+$('#jdChat').onclick = () => { playSel = 'job:' + openJob; show('play'); };
+
+// ---- playground
+let playSel = null, history = [];
+async function loadPlay() {
+  jobs = await api('/api/jobs');
+  const done = jobs.filter(j => j.status === 'completed');
+  const bases = [...new Set(done.map(j => j.base_model))];
+  $('#playModel').innerHTML = done.map(j => `<option value="job:${j.id}">${esc(j.name)} (fine-tuned)</option>`).join('')
+    + bases.map(b => `<option value="base:${esc(b)}">${esc(b)} (base, untuned)</option>`).join('')
+    || '<option value="">No completed jobs yet</option>';
+  if (playSel) $('#playModel').value = playSel;
+}
+$('#playModel').onchange = e => playSel = e.target.value;
+$('#playClear').onclick = () => { history = []; $('#chatLog').innerHTML = ''; };
+const bubble = (role, html) => { const d = document.createElement('div'); d.className = 'msg ' + role; d.innerHTML = html;
+  $('#chatLog').append(d); $('#chatLog').scrollTop = 1e9; return d; };
+async function send() {
+  const text = $('#chatIn').value.trim(), sel = $('#playModel').value; if (!text || !sel) return;
+  if (!history.length) $('#chatLog').innerHTML = '';
+  $('#chatIn').value = ''; history.push({role: 'user', content: text}); bubble('user', esc(text));
+  const pending = bubble('assistant', '<span class="muted">Thinking… (first message loads the model)</span>');
+  const [kind, id] = [sel.slice(0, sel.indexOf(':')), sel.slice(sel.indexOf(':') + 1)];
+  $('#chatSend').disabled = true;
+  try {
+    const r = await api('/api/chat', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({
+      job_id: kind === 'job' ? id : null, base_model: kind === 'base' ? id : null, messages: history,
+      max_new_tokens: Number($('#playMax').value), temperature: Number($('#playTemp').value), enable_thinking: $('#playThink').checked})});
+    pending.innerHTML = (r.thinking ? `<details class="think"><summary>Reasoning (${r.thinking.split(/\s+/).length} words)</summary><div>${esc(r.thinking)}</div></details>` : '')
+      + esc(r.answer || '(no answer — raise max tokens)');
+    history.push({role: 'assistant', content: r.answer});
+  } catch (err) { pending.innerHTML = `<span class="err">${esc(err.message)}</span>`; history.pop(); }
+  $('#chatSend').disabled = false;
+}
+$('#chatSend').onclick = send;
+$('#chatIn').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+
+loadDatasets();
+</script>
+</body>
+</html>
